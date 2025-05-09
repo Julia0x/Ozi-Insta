@@ -1,325 +1,194 @@
+#!/usr/bin/env python3
+# Instagram Follower Manager
+# A tool to unfollow Instagram users who don't follow you back
+
 import os
-import json
 import time
 import random
-import logging
-from datetime import datetime
-from typing import Dict, List, Optional
-from pathlib import Path
-from rich.console import Console
-from rich.progress import Progress
-from rich.prompt import Prompt, Confirm
-from rich.table import Table
-from cryptography.fernet import Fernet
-from instagrapi import Client
-from instagrapi.exceptions import LoginRequired
-import pandas as pd
+import getpass
+from typing import List, Dict
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('instagram_manager.log'),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+try:
+    from instagrapi import Client
+    from instagrapi.exceptions import LoginRequired
+except ImportError:
+    print("Error: instagrapi module not found.")
+    print("Please install it using: pip install instagrapi")
+    exit(1)
 
-class InstagramAccountManager:
+class InstagramFollowerManager:
     def __init__(self):
-        self.console = Console()
-        self.accounts: Dict[str, Client] = {}
-        self.encryption_key = self._get_or_create_key()
-        self.fernet = Fernet(self.encryption_key)
-        self.sessions_file = Path("sessions.enc")
-        self.whitelist_file = Path("whitelist.json")
-        self.load_sessions()
-        self.whitelist = self._load_whitelist()
-        self.UNFOLLOW_DELAY = random.uniform(1, 3)
-        self.DAILY_UNFOLLOW_LIMIT = 200
+        self.client = Client()
+        self.user_id = None
+        self.username = None
+        self.followers = []
+        self.following = []
+        self.non_followers = []
         
-    def _get_or_create_key(self) -> bytes:
-        """Get existing encryption key or create a new one."""
-        key_file = Path(".key")
-        if key_file.exists():
-            return key_file.read_bytes()
-        key = Fernet.generate_key()
-        key_file.write_bytes(key)
-        return key
-
-    def _load_whitelist(self) -> List[str]:
-        """Load whitelist from file."""
-        if self.whitelist_file.exists():
-            with open(self.whitelist_file) as f:
-                return json.load(f)
-        return []
-
-    def save_sessions(self):
-        """Save account sessions securely."""
-        sessions = {}
-        for username, client in self.accounts.items():
-            sessions[username] = {
-                'settings': client.get_settings(),
-                'session': client.get_settings()
-            }
-        encrypted_data = self.fernet.encrypt(json.dumps(sessions).encode())
-        self.sessions_file.write_bytes(encrypted_data)
-        logger.info("Sessions saved successfully")
-
-    def load_sessions(self):
-        """Load saved sessions."""
-        if not self.sessions_file.exists():
-            return
-        
+    def login(self, username: str, password: str) -> bool:
+        """Login to Instagram account"""
         try:
-            encrypted_data = self.sessions_file.read_bytes()
-            sessions = json.loads(self.fernet.decrypt(encrypted_data))
-            
-            for username, data in sessions.items():
-                client = Client()
-                client.set_settings(data['settings'])
-                client.set_settings(data['session'])
-                try:
-                    client.get_timeline_feed()  # Verify session
-                    self.accounts[username] = client
-                    logger.info(f"Loaded session for {username}")
-                except LoginRequired:
-                    logger.warning(f"Session expired for {username}")
-        except Exception as e:
-            logger.error(f"Error loading sessions: {e}")
-
-    def add_account(self, username: str, password: str):
-        """Add a new Instagram account."""
-        try:
-            client = Client()
-            client.login(username, password)
-            self.accounts[username] = client
-            self.save_sessions()
-            logger.info(f"Successfully added account: {username}")
+            print("Logging in to Instagram...")
+            self.client.login(username, password)
+            self.username = username
+            self.user_id = self.client.user_id
+            print(f"Successfully logged in as {username}")
             return True
         except Exception as e:
-            logger.error(f"Failed to add account {username}: {e}")
+            print(f"Login failed: {e}")
             return False
-
-    def remove_account(self, username: str):
-        """Remove an Instagram account."""
-        if username in self.accounts:
-            del self.accounts[username]
-            self.save_sessions()
-            logger.info(f"Removed account: {username}")
-            return True
-        return False
-
-    def get_relationship_stats(self, username: str) -> Dict:
-        """Get follower/following statistics for an account."""
-        if username not in self.accounts:
-            raise ValueError("Account not found")
-
-        client = self.accounts[username]
-        user_id = client.user_id
-
-        with Progress() as progress:
-            followers_task = progress.add_task("Fetching followers...", total=100)
-            following_task = progress.add_task("Fetching following...", total=100)
-
-            followers = client.user_followers(user_id)
-            progress.update(followers_task, completed=100)
-
-            following = client.user_following(user_id)
-            progress.update(following_task, completed=100)
-
-        followers_set = set(followers.keys())
-        following_set = set(following.keys())
+            
+    def get_followers(self) -> List[Dict]:
+        """Get account followers"""
+        print("Fetching followers...")
+        try:
+            followers = self.client.user_followers(self.user_id, amount=0)
+            self.followers = [
+                {
+                    "pk": user_id,
+                    "username": user_info.username,
+                    "full_name": user_info.full_name
+                }
+                for user_id, user_info in followers.items()
+            ]
+            print(f"Found {len(self.followers)} followers")
+            return self.followers
+        except LoginRequired:
+            print("Session expired. Please login again.")
+            return []
+        except Exception as e:
+            print(f"Error getting followers: {e}")
+            return []
+    
+    def get_following(self) -> List[Dict]:
+        """Get accounts the user is following"""
+        print("Fetching following...")
+        try:
+            following = self.client.user_following(self.user_id, amount=0)
+            self.following = [
+                {
+                    "pk": user_id,
+                    "username": user_info.username,
+                    "full_name": user_info.full_name
+                }
+                for user_id, user_info in following.items()
+            ]
+            print(f"Found {len(self.following)} accounts you're following")
+            return self.following
+        except LoginRequired:
+            print("Session expired. Please login again.")
+            return []
+        except Exception as e:
+            print(f"Error getting following: {e}")
+            return []
+    
+    def find_non_followers(self) -> List[Dict]:
+        """Find accounts that don't follow back"""
+        follower_ids = [user["pk"] for user in self.followers]
+        self.non_followers = [
+            user for user in self.following 
+            if user["pk"] not in follower_ids
+        ]
+        print(f"Found {len(self.non_followers)} accounts that don't follow you back")
+        return self.non_followers
+    
+    def unfollow_users(self, user_ids: List[str], delay_range: tuple = (15, 45)) -> None:
+        """Unfollow selected users with random delays"""
+        total = len(user_ids)
         
-        non_mutual = following_set - followers_set
-        
-        stats = {
-            'total_followers': len(followers),
-            'total_following': len(following),
-            'ratio': len(followers) / len(following) if len(following) > 0 else 0,
-            'non_mutual_count': len(non_mutual),
-            'non_mutual': non_mutual
-        }
-        
-        return stats
-
-    def smart_unfollow(self, username: str, exclude_verified: bool = True, 
-                      exclude_business: bool = True):
-        """Implement smart unfollowing with safety features."""
-        if username not in self.accounts:
-            raise ValueError("Account not found")
-
-        client = self.accounts[username]
-        stats = self.get_relationship_stats(username)
-        non_mutual = stats['non_mutual']
-
-        # Backup following list
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_file = f"following_backup_{timestamp}.csv"
-        following_data = []
-        for user_id in client.user_following(client.user_id).keys():
-            user_info = client.user_info(user_id)
-            following_data.append({
-                'user_id': user_id,
-                'username': user_info.username,
-                'full_name': user_info.full_name
-            })
-        pd.DataFrame(following_data).to_csv(backup_file, index=False)
-
-        unfollowed_count = 0
-        with Progress() as progress:
-            task = progress.add_task("Unfollowing non-mutual followers...", 
-                                   total=len(non_mutual))
-
-            for user_id in non_mutual:
-                if unfollowed_count >= self.DAILY_UNFOLLOW_LIMIT:
-                    logger.warning("Daily unfollow limit reached")
-                    break
-
-                try:
-                    user_info = client.user_info(user_id)
-                    
-                    # Check exclusion criteria
-                    if (user_info.username in self.whitelist or
-                        (exclude_verified and user_info.is_verified) or
-                        (exclude_business and user_info.is_business)):
-                        continue
-
-                    if Confirm.ask(f"Unfollow @{user_info.username}?"):
-                        client.user_unfollow(user_id)
-                        unfollowed_count += 1
-                        time.sleep(self.UNFOLLOW_DELAY)
-                        logger.info(f"Unfollowed @{user_info.username}")
-                
-                except Exception as e:
-                    logger.error(f"Error unfollowing user {user_id}: {e}")
-                
-                progress.update(task, advance=1)
-
-        return unfollowed_count
-
-    def display_menu(self):
-        """Display main menu interface."""
-        while True:
-            self.console.clear()
-            self.console.print("[bold blue]Instagram Account Manager[/bold blue]")
-            
-            menu = Table(show_header=True, header_style="bold magenta")
-            menu.add_column("Option", style="dim")
-            menu.add_column("Description")
-            
-            menu.add_row("1", "Add Account")
-            menu.add_row("2", "Remove Account")
-            menu.add_row("3", "View Account Statistics")
-            menu.add_row("4", "Smart Unfollow")
-            menu.add_row("5", "Manage Whitelist")
-            menu.add_row("6", "Exit")
-            
-            self.console.print(menu)
-            
-            choice = Prompt.ask("Select an option", choices=["1", "2", "3", "4", "5", "6"])
-            
+        for index, user_id in enumerate(user_ids, 1):
             try:
-                if choice == "1":
-                    username = Prompt.ask("Enter Instagram username")
-                    password = Prompt.ask("Enter password", password=True)
-                    self.add_account(username, password)
+                user_info = next((user for user in self.non_followers if user["pk"] == user_id), None)
+                if not user_info:
+                    continue
+                    
+                print(f"[{index}/{total}] Unfollowing @{user_info['username']}...")
+                result = self.client.user_unfollow(user_id)
                 
-                elif choice == "2":
-                    if not self.accounts:
-                        self.console.print("No accounts to remove!", style="red")
-                        continue
-                    
-                    username = Prompt.ask("Enter username to remove", 
-                                        choices=list(self.accounts.keys()))
-                    self.remove_account(username)
+                if result:
+                    print(f"Successfully unfollowed @{user_info['username']}")
+                else:
+                    print(f"Failed to unfollow @{user_info['username']}")
                 
-                elif choice == "3":
-                    if not self.accounts:
-                        self.console.print("No accounts available!", style="red")
-                        continue
+                # Random delay to avoid rate limits if more users to unfollow
+                if index < total:
+                    delay = random.uniform(delay_range[0], delay_range[1])
+                    print(f"Waiting {delay:.1f} seconds before next unfollow...")
+                    time.sleep(delay)
                     
-                    username = Prompt.ask("Select account", 
-                                        choices=list(self.accounts.keys()))
-                    stats = self.get_relationship_stats(username)
-                    
-                    stats_table = Table(title=f"Statistics for @{username}")
-                    stats_table.add_column("Metric", style="cyan")
-                    stats_table.add_column("Value", style="magenta")
-                    
-                    stats_table.add_row("Followers", str(stats['total_followers']))
-                    stats_table.add_row("Following", str(stats['total_following']))
-                    stats_table.add_row("Ratio", f"{stats['ratio']:.2f}")
-                    stats_table.add_row("Non-mutual", str(stats['non_mutual_count']))
-                    
-                    self.console.print(stats_table)
-                    Prompt.ask("Press Enter to continue")
-                
-                elif choice == "4":
-                    if not self.accounts:
-                        self.console.print("No accounts available!", style="red")
-                        continue
-                    
-                    username = Prompt.ask("Select account", 
-                                        choices=list(self.accounts.keys()))
-                    exclude_verified = Confirm.ask("Exclude verified accounts?")
-                    exclude_business = Confirm.ask("Exclude business accounts?")
-                    
-                    if Confirm.ask("Start unfollowing?"):
-                        count = self.smart_unfollow(username, exclude_verified, 
-                                                  exclude_business)
-                        self.console.print(f"Unfollowed {count} users")
-                        Prompt.ask("Press Enter to continue")
-                
-                elif choice == "5":
-                    while True:
-                        self.console.clear()
-                        self.console.print("[bold blue]Whitelist Management[/bold blue]")
-                        
-                        whitelist_table = Table(show_header=True)
-                        whitelist_table.add_column("Username")
-                        for username in self.whitelist:
-                            whitelist_table.add_row(username)
-                        
-                        self.console.print(whitelist_table)
-                        
-                        wl_choice = Prompt.ask(
-                            "Select action",
-                            choices=["add", "remove", "back"]
-                        )
-                        
-                        if wl_choice == "add":
-                            username = Prompt.ask("Enter username to whitelist")
-                            if username not in self.whitelist:
-                                self.whitelist.append(username)
-                                with open(self.whitelist_file, 'w') as f:
-                                    json.dump(self.whitelist, f)
-                        
-                        elif wl_choice == "remove":
-                            if self.whitelist:
-                                username = Prompt.ask(
-                                    "Select username to remove",
-                                    choices=self.whitelist
-                                )
-                                self.whitelist.remove(username)
-                                with open(self.whitelist_file, 'w') as f:
-                                    json.dump(self.whitelist, f)
-                            else:
-                                self.console.print("Whitelist is empty!", style="red")
-                                Prompt.ask("Press Enter to continue")
-                        
-                        elif wl_choice == "back":
-                            break
-                
-                elif choice == "6":
-                    break
-            
             except Exception as e:
-                logger.error(f"Error in menu operation: {e}")
-                self.console.print(f"Error: {str(e)}", style="red")
-                Prompt.ask("Press Enter to continue")
+                print(f"Error unfollowing user: {e}")
+                time.sleep(60)  # Longer delay on error
+    
+    def interactive_unfollow(self) -> None:
+        """Interactive menu to select and unfollow users"""
+        if not self.non_followers:
+            print("No non-followers found.")
+            return
+            
+        while True:
+            print("\n" + "=" * 50)
+            print("ACCOUNTS THAT DON'T FOLLOW YOU BACK")
+            print("=" * 50)
+            
+            for i, user in enumerate(self.non_followers, 1):
+                print(f"{i}. @{user['username']} - {user['full_name']}")
+            
+            print("\n[A] Unfollow all")
+            print("[S] Select specific users to unfollow")
+            print("[Q] Quit without unfollowing")
+            
+            choice = input("\nEnter your choice: ").strip().upper()
+            
+            if choice == 'A':
+                confirm = input("Are you sure you want to unfollow ALL non-followers? (y/n): ").strip().lower()
+                if confirm == 'y':
+                    user_ids = [user["pk"] for user in self.non_followers]
+                    self.unfollow_users(user_ids)
+                break
+                
+            elif choice == 'S':
+                selected_indices = input("Enter the numbers of users to unfollow (comma-separated): ").strip()
+                try:
+                    indices = [int(x.strip()) - 1 for x in selected_indices.split(',')]
+                    selected_users = [self.non_followers[i] for i in indices if 0 <= i < len(self.non_followers)]
+                    
+                    if selected_users:
+                        user_ids = [user["pk"] for user in selected_users]
+                        self.unfollow_users(user_ids)
+                    else:
+                        print("No valid users selected.")
+                except (ValueError, IndexError):
+                    print("Invalid input. Please enter comma-separated numbers.")
+                break
+                
+            elif choice == 'Q':
+                print("Exiting without unfollowing any users.")
+                break
+                
+            else:
+                print("Invalid choice. Please try again.")
+
+def main():
+    print("=" * 60)
+    print("INSTAGRAM FOLLOWER MANAGER")
+    print("=" * 60)
+    print("This tool helps you identify and unfollow Instagram users who don't follow you back.")
+    print("Your login information is only used locally and is not stored or shared.")
+    print("=" * 60)
+    
+    username = input("Enter your Instagram username: ")
+    password = getpass.getpass("Enter your Instagram password: ")
+    
+    manager = InstagramFollowerManager()
+    
+    if manager.login(username, password):
+        manager.get_followers()
+        manager.get_following()
+        manager.find_non_followers()
+        manager.interactive_unfollow()
+    
+    print("\nThank you for using Instagram Follower Manager!")
 
 if __name__ == "__main__":
-    manager = InstagramAccountManager()
-    manager.display_menu()
+    main()
