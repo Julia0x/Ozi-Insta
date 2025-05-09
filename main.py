@@ -11,7 +11,7 @@ from typing import List, Dict
 
 try:
     from instagrapi import Client
-    from instagrapi.exceptions import LoginRequired, ClientError
+    from instagrapi.exceptions import LoginRequired, ClientError, PleaseWaitFewMinutes
 except ImportError:
     print("Error: instagrapi module not found.")
     print("Please install it using: pip install instagrapi")
@@ -29,9 +29,14 @@ class InstagramFollowerManager:
         
     def save_session(self):
         """Save session data to file"""
-        session = self.client.get_settings()
-        with open(self.session_file, 'w') as f:
-            json.dump(session, f)
+        try:
+            session = self.client.get_settings()
+            with open(self.session_file, 'w') as f:
+                json.dump(session, f)
+            return True
+        except Exception as e:
+            print(f"Failed to save session: {e}")
+            return False
             
     def load_session(self) -> bool:
         """Load session data from file"""
@@ -41,9 +46,12 @@ class InstagramFollowerManager:
                     session = json.load(f)
                     self.client.set_settings(session)
                     self.client.login(self.username, "")
+                    self.user_id = self.client.user_id
                     return True
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Failed to load session: {e}")
+            if os.path.exists(self.session_file):
+                os.remove(self.session_file)
         return False
         
     def login(self, username: str, password: str) -> bool:
@@ -55,7 +63,6 @@ class InstagramFollowerManager:
             # Try to load existing session first
             if self.load_session():
                 print(f"Successfully logged in as {username} using saved session")
-                self.user_id = self.client.user_id
                 return True
                 
             # If session loading fails, do fresh login
@@ -85,6 +92,8 @@ class InstagramFollowerManager:
             print(f"Found {len(self.followers)} followers")
             return self.followers
         except LoginRequired:
+            if self.load_session():
+                return self.get_followers()
             print("Session expired. Please login again.")
             return []
         except Exception as e:
@@ -107,6 +116,8 @@ class InstagramFollowerManager:
             print(f"Found {len(self.following)} accounts you're following")
             return self.following
         except LoginRequired:
+            if self.load_session():
+                return self.get_following()
             print("Session expired. Please login again.")
             return []
         except Exception as e:
@@ -123,7 +134,7 @@ class InstagramFollowerManager:
         print(f"Found {len(self.non_followers)} accounts that don't follow you back")
         return self.non_followers
     
-    def unfollow_users(self, user_ids: List[str], delay_range: tuple = (30, 60)) -> None:
+    def unfollow_users(self, user_ids: List[str], delay_range: tuple = (45, 90)) -> None:
         """Unfollow selected users with random delays"""
         total = len(user_ids)
         retries = 3
@@ -141,7 +152,6 @@ class InstagramFollowerManager:
                     
                     if result:
                         print(f"Successfully unfollowed @{user_info['username']}")
-                        # Save session after successful unfollow
                         self.save_session()
                         break
                     else:
@@ -155,15 +165,20 @@ class InstagramFollowerManager:
                         return
                     retry_count += 1
                     
+                except PleaseWaitFewMinutes:
+                    print("Rate limit reached. Waiting 5 minutes...")
+                    time.sleep(300)
+                    retry_count += 1
+                    
                 except ClientError as e:
                     print(f"Instagram API error: {e}")
                     retry_count += 1
-                    time.sleep(120)  # Longer delay on API errors
+                    time.sleep(180)  # Longer delay on API errors
                     
                 except Exception as e:
                     print(f"Error unfollowing user: {e}")
                     retry_count += 1
-                    time.sleep(60)  # Standard delay on other errors
+                    time.sleep(90)  # Standard delay on other errors
                     
                 if retry_count >= retries:
                     print(f"Failed to unfollow @{user_info['username']} after {retries} attempts")
